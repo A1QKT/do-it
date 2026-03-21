@@ -1,0 +1,154 @@
+openapi: 3.0.3
+info:
+  title: Road score API
+  description: |
+    Score a road/street image from **1** (best — good street to use) to **100** (worst).
+    Responses include a short **rationale**, a longer **explanation**, and structured **analysis**
+    (pavement, visibility, hazards, context). Backend uses **OpenRouter** vision models.
+  version: 1.1.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local (uvicorn)
+  - url: https://api.example.com
+    description: Production (replace with your host)
+
+tags:
+  - name: road-score
+    description: Road quality from images
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      operationId: healthCheck
+      tags: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /v1/road-score:
+    post:
+      summary: Score road quality from an image
+      description: |
+        Upload a single image. Returns **score** (1–100), **rationale** (one line),
+        **explanation** (multi-sentence), and **analysis** (structured observations).
+      operationId: postRoadScore
+      tags:
+        - road-score
+      parameters:
+        - name: model
+          in: query
+          required: false
+          description: Override OpenRouter model id (optional; server has a default).
+          schema:
+            type: string
+            example: openai/gpt-4o-mini
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: Road or street photo (JPEG, PNG, or WebP).
+      responses:
+        "200":
+          description: Score, explanation, and analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoadScoreResponse"
+        "400":
+          description: Invalid file type or oversized image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Server misconfiguration (e.g. missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: OpenRouter error or unparseable model output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    RoadAnalysis:
+      type: object
+      description: Structured observations visible in the image.
+      properties:
+        pavement_surface:
+          type: string
+          description: Surface, markings, cracks, potholes, lane clarity.
+          example: "Asphalt in fair condition; visible lane markings; no major potholes in frame."
+        visibility_environment:
+          type: string
+          description: Sight lines, lighting, weather, visual clutter.
+          example: "Daylight; generally open view along the road axis."
+        hazards_constraints:
+          type: string
+          description: Obstructions, water, construction, geometry, debris.
+          example: "No obvious flooding or large obstacles in the photographed section."
+        scene_context:
+          type: string
+          description: Urban/rural cues, sidewalks, crossings, setting.
+          example: "Urban two-lane street with buildings along one side."
+
+    RoadScoreResponse:
+      type: object
+      required:
+        - score
+        - analysis
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: 1 = best street to use, 100 = worst.
+          example: 24
+        rationale:
+          type: string
+          nullable: true
+          description: One-line summary for the score.
+          example: "Good pavement and markings with no major hazards visible."
+        explanation:
+          type: string
+          nullable: true
+          description: Multi-sentence narrative for end users.
+          example: "The road surface appears even with clear lane paint. Visibility along the corridor looks adequate for the conditions shown. No severe obstacles are visible in this frame, though the assessment is limited to what the photo shows."
+        analysis:
+          $ref: "#/components/schemas/RoadAnalysis"
+        model:
+          type: string
+          nullable: true
+          description: Vision model id used on OpenRouter.
+          example: openai/gpt-4o-mini
+
+    Error:
+      type: object
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: array
+              items: {}
