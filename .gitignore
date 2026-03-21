@@ -1,0 +1,65 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+dist/
+build/
+wheels/
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+.env/
+.env.*
+!.env.example
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# --- Tooling ---
+.tox/
+.nox/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editors ---
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code: keep shared settings optional (uncomment to ignore whole folder)
+# .vscode/
+
+# --- This project: streaming / STT runtime files ---
+transcribe.log
+transcribe.pid
+*.pid
+# Default local transcript output (remove this line if you want to commit it)
+transcript.txt
+
+# Hugging Face / Whisper cache if ever created inside repo
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radio-hls"
+version = "0.2.0"
+description = "Consume HLS internet radio (ffmpeg/ffprobe); default VOH streams"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "imageio-ffmpeg>=0.4.9",
+]
+
+[project.optional-dependencies]
+stt = [
+    "faster-whisper>=1.0.0",
+]
+
+[project.scripts]
+voh-hls = "radio_hls.hls_stream:cli"
+voh-transcribe = "radio_hls.transcribe:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["radio_hls*"]

@@ -1,0 +1,8 @@
+# Bundled ffmpeg binary (used by run.py — no Homebrew needed)
+imageio-ffmpeg>=0.4.9
+
+# Package + CLI: voh-hls, voh-transcribe, python -m radio_hls
+-e .
+
+# Speech-to-text (transcribe_stream.py): also run
+#   pip install -e ".[stt]"
