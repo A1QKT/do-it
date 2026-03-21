@@ -4,5 +4,8 @@ imageio-ffmpeg>=0.4.9
 # Package + CLI: voh-hls, voh-transcribe, python -m radio_hls
 -e .
 
+# FastAPI + uvicorn for ./script/host-api.sh (same pins as api/requirements.txt)
+-r api/requirements.txt
+
 # Speech-to-text (transcribe_stream.py): also run
 #   pip install -e ".[stt]"

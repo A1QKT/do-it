@@ -44,9 +44,13 @@ def transcribe_audio_bytes_whisper(
     audio_bytes: bytes,
     *,
     filename_hint: str | None = None,
+    language: str | None = None,
 ) -> str:
     """
     Write bytes to a temp file (suffix from filename_hint), run Whisper, return joined transcript.
+
+    ``language`` overrides WHISPER_LANGUAGE for this call (ISO 639-1, e.g. ``vi``). When omitted, uses
+    env WHISPER_LANGUAGE if set; otherwise faster-whisper auto-detects (often wrong for short clips).
     """
     if not audio_bytes:
         raise ValueError("empty audio")
@@ -59,11 +63,12 @@ def transcribe_audio_bytes_whisper(
         path = tmp.name
 
     try:
-        _, _, _, language = _config()
+        _, _, _, env_lang = _config()
+        effective = (language or "").strip() or ((env_lang or "").strip() or None)
         model = _get_model()
         kwargs: dict = {"beam_size": 5}
-        if language:
-            kwargs["language"] = language
+        if effective:
+            kwargs["language"] = effective
         with _lock:
             segments, _info = model.transcribe(path, **kwargs)
             parts = [s.text.strip() for s in segments]

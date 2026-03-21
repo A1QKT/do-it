@@ -809,6 +809,34 @@ def _export_key_for_scored_media_item(item: dict[str, Any], idx: int) -> str:
     return f"crawl:{kind}:{idx}"
 
 
+# When the crawl saves a Vietnamese paragraph alongside TTS audio, force Whisper to use ``vi`` so
+# transcription matches the spoken content (auto-detect often mislabels short clips as English).
+_WHISPER_VI_HINT_RE = re.compile(
+    r"[ăâđêôơưĂÂĐÊÔƠƯạảãấầẩậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]"
+)
+
+
+def _whisper_language_hint_from_crawl_items(items: list[dict[str, Any]]) -> str | None:
+    for it in items:
+        if it.get("kind") != "text" or it.get("error"):
+            continue
+        lp = it.get("local_path")
+        if not lp:
+            continue
+        path = _REPO_ROOT / lp
+        if not path.is_file():
+            continue
+        try:
+            blob = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(blob.strip()) < 10:
+            continue
+        if _WHISPER_VI_HINT_RE.search(blob):
+            return "vi"
+    return None
+
+
 def export_keys_from_media_openrouter(media_downloads: list[dict[str, Any]]) -> dict[str, str]:
     """Map scored media rows to location-key → score string for the root JSON object."""
     result: dict[str, str] = {}
@@ -835,6 +863,10 @@ def export_keys_from_media_openrouter(media_downloads: list[dict[str, Any]]) -> 
 def score_media_items_with_openrouter(items: list[dict[str, Any]]) -> None:
     from api import media_score as ms
 
+    whisper_lang = _whisper_language_hint_from_crawl_items(items)
+    if whisper_lang:
+        logging.info("Using Whisper language=%s (inferred from crawl paragraph text)", whisper_lang)
+
     for it in items:
         if it.get("error") or not it.get("local_path"):
             continue
@@ -855,6 +887,7 @@ def score_media_items_with_openrouter(items: list[dict[str, Any]]) -> None:
                     data,
                     openrouter_format=fmt,
                     filename_hint=p.name,
+                    whisper_language=whisper_lang,
                 )
             else:
                 mime = it.get("content_type") or mimetypes.guess_type(p.name)[0] or "image/jpeg"

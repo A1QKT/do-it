@@ -29,6 +29,8 @@ _NODE_LABEL_RE = re.compile(
 _CORRIDOR_HINT_RE = re.compile(
     r"(?i)(đoạn\s+từ|đoạn\s|tuyến\s+.+\s*,|route\s+from|segment\s+from)",
 )
+# Common faster-whisper/VN TTS mis-hearing for "Hoàng Văn Thụ" (sounds like "hẳng vang thủ")
+_GARBLED_TUYEN_HOANG_VAN_THU = re.compile(r"(?i)Tuyến\s+hẳng\s+vang\s+thủ\b")
 
 
 def _export_path() -> Path:
@@ -177,6 +179,25 @@ def _first_sentence(s: str, max_len: int = 140) -> str:
     return _truncate_at_word(s, max_len)
 
 
+def _fix_known_garbled_route_name(fragment: str) -> str:
+    """Map recurring ASR errors to the intended route wording."""
+    return _GARBLED_TUYEN_HOANG_VAN_THU.sub("Tuyến Hoàng Văn Thụ", fragment.strip())
+
+
+def _route_name_from_audio_transcript(text: str, max_len: int = 130) -> str:
+    """Strip boilerplate; use first comma clause as route name (VN traffic style: 'Tuyến …, đoạn …')."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"^Audio\s+traffic\s+report:\s*", "", t, flags=re.I).strip()
+    if "," in t:
+        first = t.split(",")[0].strip()
+        if len(first) >= 4:
+            return _truncate_at_word(_fix_known_garbled_route_name(first), max_len)
+    out = _first_sentence(t, max_len)
+    return _truncate_at_word(_fix_known_garbled_route_name(out), max_len)
+
+
 def _label_from_prose_export_key(export_key: str) -> str:
     """Short corridor-style title from paragraph text keys (not image:/audio:)."""
     key = export_key.strip()
@@ -225,10 +246,10 @@ def _derive_route_label(
     if analysis and kind == "audio":
         ts = (analysis.get("transcription_summary") or "").strip()
         if ts:
-            return _first_sentence(f"Audio traffic report: {ts}", 130)
+            return _route_name_from_audio_transcript(ts, 130)
         tr = (o or {}).get("transcript")
         if isinstance(tr, str) and tr.strip():
-            return _first_sentence(f"Audio traffic report: {tr.strip()}", 130)
+            return _route_name_from_audio_transcript(tr.strip(), 130)
 
     if o and kind == "audio":
         rat = (o.get("rationale") or "").strip()

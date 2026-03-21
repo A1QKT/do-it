@@ -38,6 +38,29 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_TEXT_CHARS = 32_000
 
+# Romanized + Vietnamese tokens: if present, text score must respect severity floor (model often returns 1–20 by habit).
+_VN_DISRUPTION_RE = re.compile(
+    r"(?i)(ùn\s*tắc|\bun\s+tac\b|tắc\s*đường|\btac\s+duong\b|kẹt\s*xe|\bket\s+xe\b|kẹt\s*cứng|"
+    r"triều\s*cường|trieu\s*cuong|ngập|ngap\s+ung|ngap\s+nuoc|\btai\s+nan\b|tai\s+nạn|đường\s*đóng|"
+    r"xe\s*hỏng|ùn\s*ứ|\bun\s+u\b|đông\s*xe|\bdong\s+xe\b)",
+    re.UNICODE,
+)
+_VN_DISRUPTION_SEVERE_RE = re.compile(
+    r"(?i)(cực\s*mạnh|\bcuc\s+manh\b|cực\s*đông|\bcuc\s+dong\b|nghiêm\s*trọng|nghiem\s*trong|"
+    r"cực\s*nghiêm|kẹt\s*cứng|\bket\s+cung\b|ùn\s*nặng|un\s*nang)",
+    re.UNICODE,
+)
+
+
+def _vn_disruption_score_floor(text: str) -> int | None:
+    """Minimum score when disruption keywords appear (severity rubric: higher = worse news)."""
+    if not _VN_DISRUPTION_RE.search(text):
+        return None
+    if _VN_DISRUPTION_SEVERE_RE.search(text):
+        return 71
+    return 51
+
+
 router = APIRouter(tags=["media-score"])
 
 
@@ -356,6 +379,7 @@ def score_media_audio_via_transcript_sync(
     transcribe_model: str | None = None,
     score_model: str | None = None,
     filename_hint: str | None = None,
+    whisper_language: str | None = None,
 ) -> MediaAudioScoreResponse:
     """Transcribe audio (Whisper by default), then score transcript like /v1/media/text-score."""
     tm = transcribe_model or DEFAULT_TRANSCRIBE_MODEL
@@ -379,6 +403,7 @@ def score_media_audio_via_transcript_sync(
             transcript = transcribe_audio_bytes_whisper(
                 audio_bytes,
                 filename_hint=filename_hint,
+                language=whisper_language,
             )
             transcribe_label = f"whisper:{os.getenv('WHISPER_MODEL_SIZE', 'base')}"
         except ImportError:
@@ -423,8 +448,9 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
             {
                 "role": "user",
                 "content": (
-                    "Score the following paragraph for traffic/mobility usefulness (1–100) "
-                    "and return only the JSON object from your instructions.\n\n---\n" + t + "\n---"
+                    "Score the following paragraph on the 1–100 **severity / significance** scale defined in your "
+                    "system instructions (higher = more serious disruption for travelers). "
+                    "Return only the JSON object from your instructions.\n\n---\n" + t + "\n---"
                 ),
             },
         ],
@@ -440,6 +466,9 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
     score = int(obj["score"])
     if score < 1 or score > 100:
         raise ValueError("score out of range")
+    floor = _vn_disruption_score_floor(t)
+    if floor is not None and score < floor:
+        score = floor
     explanation = obj.get("explanation")
     if explanation is not None:
         explanation = str(explanation).strip() or None
@@ -499,6 +528,10 @@ async def media_audio_score(
         None,
         description="Text model used to score the transcript (default OPENROUTER_MODEL).",
     ),
+    whisper_language: str | None = Query(
+        None,
+        description="When using local Whisper: force language (e.g. vi). Overrides WHISPER_LANGUAGE.",
+    ),
     model: str | None = Query(
         None,
         description="When direct=true: audio model for one-shot scoring (default OPENROUTER_MEDIA_AUDIO_MODEL).",
@@ -528,6 +561,7 @@ async def media_audio_score(
                 transcribe_model=transcribe_model,
                 score_model=score_model,
                 filename_hint=audio.filename,
+                whisper_language=whisper_language,
             ),
         )
     except HTTPException:
