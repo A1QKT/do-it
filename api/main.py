@@ -76,7 +76,7 @@ def _cors_origins() -> list[str]:
 app = FastAPI(
     title="Road score API",
     description="Image → road quality score (1 best, 100 worst), explanation, and structured analysis via OpenRouter vision.",
-    version="1.5.1",
+    version="1.5.2",
 )
 app.add_middleware(
     CORSMiddleware,

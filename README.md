@@ -100,7 +100,7 @@ Stop crawl: **`kill "$(cat crawl.pid)"`**.
 | `POST` | `/v1/media/image-score` | `image` file — same road/traffic rubric as `/v1/road-score` |
 | `POST` | `/v1/media/audio-score` | `audio` file — **Whisper** (faster-whisper) transcription then **score the transcript** (default). Env **`AUDIO_TRANSCRIBE_BACKEND=openrouter`** uses OpenRouter `input_audio` instead. `?direct=true` = legacy one-shot audio JSON. **`WHISPER_MODEL_SIZE`**, **`WHISPER_LANGUAGE`**, etc. in `.env`. |
 | `POST` | `/v1/media/text-score` | JSON body `{"text":"…"}` — score the paragraph for traffic/mobility usefulness |
-| `GET` | `/v1/media-seed/latest` | **`routes`**: **`route`**, **`score`**, **`reason`**. All **image** rows use **`route` = Ngã tư Phú Nhuận** (override **`MEDIA_SEED_IMAGE_ROUTE_NAME`**). Text/audio use model/heuristics. **`full=true`**, **`MEDIA_SEED_EXPORT_PATH`**. |
+| `GET` | `/v1/media-seed/latest` | **`routes`**: **`route`**, **`node`** (true = junction like Ngã tư …, false = corridor segment), **`score`**, **`reason`**. Images → **`route` = Ngã tư Phú Nhuận**, **`node` = true**. **`MEDIA_SEED_IMAGE_ROUTE_NAME`**, **`full=true`**, **`MEDIA_SEED_EXPORT_PATH`**. |
 
 - Image model: **`OPENROUTER_MODEL`** (default `openai/gpt-4o-mini`).  
 - Audio model: **`OPENROUTER_MEDIA_AUDIO_MODEL`** (default `google/gemini-2.0-flash-001` — use an [audio-input](https://openrouter.ai/docs/guides/overview/multimodal/audio) model if you change it).

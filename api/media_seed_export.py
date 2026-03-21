@@ -22,6 +22,14 @@ _DEFAULT_EXPORT = _REPO_ROOT / "media_seed_export.json"
 # API `route` field for every image score (override with env for different deployments).
 _IMAGE_ROUTE_LABEL = os.getenv("MEDIA_SEED_IMAGE_ROUTE_NAME", "Ngã tư Phú Nhuận").strip() or "Ngã tư Phú Nhuận"
 
+# Intersection / junction style labels (node), vs corridor segment (route).
+_NODE_LABEL_RE = re.compile(
+    r"(?i)\b(ngã\s+tư|giao\s+lộ|vòng\s+xuyến|intersection)\b",
+)
+_CORRIDOR_HINT_RE = re.compile(
+    r"(?i)(đoạn\s+từ|đoạn\s|tuyến\s+.+\s*,|route\s+from|segment\s+from)",
+)
+
 
 def _export_path() -> Path:
     raw = os.getenv("MEDIA_SEED_EXPORT_PATH", "").strip()
@@ -237,6 +245,28 @@ def _derive_route_label(
     return _truncate_at_word(export_key, 120) if export_key else "Unknown segment"
 
 
+def _is_traffic_node(route: str, export_key: str, item: dict[str, Any] | None) -> bool:
+    """
+    True for intersection-style points (e.g. Ngã tư Phú Nhuận); False for corridor / segment routes.
+    """
+    kind = (item or {}).get("kind") if item else None
+    if kind == "image" or (export_key and export_key.startswith("image:")):
+        return True
+
+    r = route.strip()
+    k = (export_key or "").strip()
+
+    if _CORRIDOR_HINT_RE.search(r) or _CORRIDOR_HINT_RE.search(k):
+        return False
+
+    if r == _IMAGE_ROUTE_LABEL or _NODE_LABEL_RE.search(r):
+        return True
+    if k and not k.startswith(("image:", "audio:", "crawl:")) and _NODE_LABEL_RE.search(k):
+        return True
+
+    return False
+
+
 def build_route_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
     media = meta.get("media_downloads") if isinstance(meta.get("media_downloads"), list) else []
@@ -254,7 +284,8 @@ def build_route_results(data: dict[str, Any]) -> list[dict[str, Any]]:
         if not reason:
             reason = "No model explanation in export for this key (score may come from page text heuristics)."
         route = _derive_route_label(export_key, item, o)
-        routes.append({"route": route, "score": sc, "reason": reason})
+        node = _is_traffic_node(route, export_key, item)
+        routes.append({"route": route, "node": node, "score": sc, "reason": reason})
     return routes
 
 
@@ -262,6 +293,10 @@ class RouteScoreEntry(BaseModel):
     route: str = Field(
         ...,
         description="Route label; all image scores use Ngã tư Phú Nhuận (MEDIA_SEED_IMAGE_ROUTE_NAME). Text/audio: analysis/heuristics.",
+    )
+    node: bool = Field(
+        ...,
+        description="True if this row is an intersection/node (e.g. Ngã tư …); False if a corridor/segment route.",
     )
     score: int = Field(
         ...,
@@ -293,10 +328,9 @@ class MediaSeedLatestResponse(BaseModel):
     response_model=MediaSeedLatestResponse,
     summary="Latest route scores from media seed export",
     description=(
-        "Reads `media_seed_export.json` and returns **routes**: each **route** (short human-readable label), "
-        "**score** (1 = best to travel, 100 = worst), and **reason**. Every **image** score uses the same "
-        "route label (default **Ngã tư Phú Nhuận**; override with **MEDIA_SEED_IMAGE_ROUTE_NAME**). Text/audio "
-        "labels use OpenRouter `analysis` or heuristics. Set `full=true` for the raw export under **export**. "
+        "Reads `media_seed_export.json` and returns **routes**: **route**, **node** (true for intersections "
+        "like Ngã tư …, false for corridor segments), **score**, **reason**. Images use the fixed node label "
+        "(default **Ngã tư Phú Nhuận**). Set `full=true` for the raw export under **export**. "
         "Override path with `MEDIA_SEED_EXPORT_PATH`."
     ),
     responses={
