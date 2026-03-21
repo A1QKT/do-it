@@ -1,7 +1,7 @@
 """
-POST /v1/road-score — image in, road quality score 1–100 out (via OpenRouter vision).
+POST /v1/road-score — image in, road quality score 1–100 out (OpenAI or OpenRouter vision).
 
-1 = best street to use, 100 = worst. Configure OPENROUTER_API_KEY in .env (see .env.example).
+1 = best street to use, 100 = worst. Set OPENAI_API_KEY or OPENROUTER_API_KEY in .env (see .env.example).
 """
 from __future__ import annotations
 
@@ -17,14 +17,18 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from api.llm_provider import (
+    chat_completions_headers,
+    chat_completions_url,
+    default_chat_model,
+    normalize_model_for_backend,
+)
 from api.media_score import router as media_score_router
 from api.media_seed_export import router as media_seed_export_router
 from api.prompts import ROAD_VISION_SYSTEM_PROMPT
 
 load_dotenv()
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 SYSTEM_PROMPT = ROAD_VISION_SYSTEM_PROMPT
@@ -65,7 +69,7 @@ class RoadScoreResponse(BaseModel):
         default_factory=RoadAnalysis,
         description="Structured breakdown of what was observed.",
     )
-    model: str | None = Field(None, description="OpenRouter model used.")
+    model: str | None = Field(None, description="Chat model used (OpenAI or OpenRouter).")
 
 
 def _cors_origins() -> list[str]:
@@ -75,8 +79,8 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Road score API",
-    description="Image → road quality score (1 best, 100 worst), explanation, and structured analysis via OpenRouter vision.",
-    version="1.5.3",
+    description="Image → road quality score (1 best, 100 worst), explanation, and structured analysis via OpenAI or OpenRouter vision.",
+    version="1.6.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -113,35 +117,23 @@ def _coerce_analysis(raw: Any) -> RoadAnalysis:
     )
 
 
-async def _openrouter_vision(
+async def _llm_road_vision(
     *,
     image_bytes: bytes,
     media_type: str,
     model: str,
 ) -> RoadScoreResponse:
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="OPENROUTER_API_KEY is not set. Copy .env.example to .env.",
-        )
+    try:
+        headers = chat_completions_headers()
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
+    m = normalize_model_for_backend(model)
     b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     data_url = f"data:{media_type};base64,{b64}"
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    ref = os.getenv("OPENROUTER_HTTP_REFERER")
-    if ref:
-        headers["HTTP-Referer"] = ref
-    title = os.getenv("OPENROUTER_APP_TITLE")
-    if title:
-        headers["X-Title"] = title
-
     body = {
-        "model": model,
+        "model": m,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -163,19 +155,19 @@ async def _openrouter_vision(
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(OPENROUTER_URL, headers=headers, json=body)
+        r = await client.post(chat_completions_url(), headers=headers, json=body)
 
     if r.status_code != 200:
         raise HTTPException(
             status_code=502,
-            detail=f"OpenRouter error {r.status_code}: {r.text[:2000]}",
+            detail=f"LLM error {r.status_code}: {r.text[:2000]}",
         )
 
     data = r.json()
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
-        raise HTTPException(status_code=502, detail=f"Unexpected OpenRouter payload: {e}")
+        raise HTTPException(status_code=502, detail=f"Unexpected LLM payload: {e}")
 
     if isinstance(content, list):
         content = "".join(
@@ -204,7 +196,7 @@ async def _openrouter_vision(
         rationale=(str(obj["rationale"]).strip() if obj.get("rationale") else None),
         explanation=explanation,
         analysis=_coerce_analysis(obj.get("analysis")),
-        model=model,
+        model=m,
     )
 
 
@@ -219,14 +211,14 @@ async def health() -> dict[str, str]:
     summary="Score road quality from an image",
     responses={
         400: {"description": "Bad image input"},
-        502: {"description": "Upstream OpenRouter or parse error"},
+        502: {"description": "Upstream LLM or parse error"},
     },
 )
 async def road_score(
     image: UploadFile = File(..., description="Road/street photo (JPEG, PNG, or WebP)."),
     model: str | None = Query(
         None,
-        description="Optional OpenRouter model id (defaults to OPENROUTER_MODEL env).",
+        description="Optional model id (defaults to OPENAI_MODEL or OPENROUTER_MODEL per LLM_BACKEND).",
     ),
 ) -> RoadScoreResponse:
     if not image.content_type or not image.content_type.startswith("image/"):
@@ -239,8 +231,8 @@ async def road_score(
     if len(raw) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=400, detail="Image too large (max 20 MB).")
 
-    use_model = model or DEFAULT_MODEL
-    return await _openrouter_vision(
+    use_model = model or default_chat_model()
+    return await _llm_road_vision(
         image_bytes=raw,
         media_type=image.content_type,
         model=use_model,

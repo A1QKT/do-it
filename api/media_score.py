@@ -1,7 +1,9 @@
 """
-POST /v1/media/image-score, /v1/media/audio-score, /v1/media/text-score — 1–100 score + explanation (OpenRouter).
+POST /v1/media/image-score, /v1/media/audio-score, /v1/media/text-score — 1–100 score + explanation.
 
-Image: same rubric as /v1/road-score. Audio: transcribe with local Whisper (faster-whisper) by default, then score transcript; AUDIO_TRANSCRIBE_BACKEND=openrouter to use API instead; ?direct=true = one-shot audio JSON. Text: OPENROUTER_MODEL.
+LLM: OpenAI direct (OPENAI_API_KEY) or OpenRouter (OPENROUTER_API_KEY); see LLM_BACKEND in api/llm_provider.py.
+Audio: local faster-whisper by default; AUDIO_TRANSCRIBE_BACKEND=openrouter uses chat input_audio; with OpenAI,
+that API path uses OpenAI Whisper instead. ?direct=true = one-shot audio JSON via chat.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import functools
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +22,17 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
+from api.llm_provider import (
+    chat_completions_headers,
+    chat_completions_url,
+    default_audio_chat_model,
+    default_chat_model,
+    default_transcribe_chat_model,
+    llm_backend,
+    normalize_model_for_backend,
+    openai_transcriptions_url,
+    openai_whisper_model,
+)
 from api.prompts import (
     MEDIA_AUDIO_SYSTEM_PROMPT,
     MEDIA_TEXT_SYSTEM_PROMPT,
@@ -26,14 +40,6 @@ from api.prompts import (
 )
 
 load_dotenv()
-
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_IMAGE_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-DEFAULT_AUDIO_MODEL = os.getenv(
-    "OPENROUTER_MEDIA_AUDIO_MODEL",
-    "google/gemini-2.0-flash-001",
-)
-DEFAULT_TRANSCRIBE_MODEL = os.getenv("OPENROUTER_TRANSCRIBE_MODEL") or DEFAULT_AUDIO_MODEL
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_TEXT_CHARS = 32_000
@@ -118,21 +124,8 @@ class MediaTextScoreIn(BaseModel):
     text: str = Field(..., max_length=MAX_TEXT_CHARS)
 
 
-def _openrouter_headers() -> dict[str, str]:
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY is not set. Copy .env.example to .env.")
-    headers: dict[str, str] = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    ref = os.getenv("OPENROUTER_HTTP_REFERER")
-    if ref:
-        headers["HTTP-Referer"] = ref
-    title = os.getenv("OPENROUTER_APP_TITLE")
-    if title:
-        headers["X-Title"] = title
-    return headers
+def _llm_http_error(prefix: str, r: httpx.Response) -> ValueError:
+    return ValueError(f"{prefix} {r.status_code}: {r.text[:2000]}")
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -201,10 +194,11 @@ def score_media_image_sync(
 ) -> MediaImageScoreResponse:
     if len(image_bytes) > MAX_IMAGE_BYTES:
         raise ValueError("Image too large (max 20 MB)")
+    m = normalize_model_for_backend(model)
     b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     data_url = f"data:{media_type};base64,{b64}"
     body = {
-        "model": model,
+        "model": m,
         "messages": [
             {"role": "system", "content": ROAD_VISION_SYSTEM_PROMPT},
             {
@@ -222,9 +216,9 @@ def score_media_image_sync(
         "max_tokens": 1200,
     }
     with httpx.Client(timeout=120.0) as client:
-        r = client.post(OPENROUTER_URL, headers=_openrouter_headers(), json=body)
+        r = client.post(chat_completions_url(), headers=chat_completions_headers(), json=body)
     if r.status_code != 200:
-        raise ValueError(f"OpenRouter error {r.status_code}: {r.text[:2000]}")
+        raise _llm_http_error("LLM image-score error", r)
     content = _message_content_from_response(r.json())
     obj = _extract_json_object(content)
     score = int(obj["score"])
@@ -238,7 +232,7 @@ def score_media_image_sync(
         rationale=(str(obj["rationale"]).strip() if obj.get("rationale") else None),
         explanation=explanation,
         analysis=_coerce_road_like(obj.get("analysis")),
-        model=model,
+        model=m,
     )
 
 
@@ -259,12 +253,13 @@ def transcribe_audio_sync(
     openrouter_format: str,
     model: str,
 ) -> str:
-    """Speech → plain text (no JSON). Uses OpenRouter input_audio."""
+    """Speech → plain text (no JSON). Uses chat completions + input_audio (OpenRouter or OpenAI if supported)."""
     if len(audio_bytes) > MAX_AUDIO_BYTES:
         raise ValueError("Audio too large (max 25 MB)")
+    m = normalize_model_for_backend(model)
     b64 = base64.standard_b64encode(audio_bytes).decode("ascii")
     body = {
-        "model": model,
+        "model": m,
         "messages": [
             {
                 "role": "system",
@@ -286,11 +281,55 @@ def transcribe_audio_sync(
         "max_tokens": 8000,
     }
     with httpx.Client(timeout=180.0) as client:
-        r = client.post(OPENROUTER_URL, headers=_openrouter_headers(), json=body)
+        r = client.post(chat_completions_url(), headers=chat_completions_headers(), json=body)
     if r.status_code != 200:
-        raise ValueError(f"OpenRouter error {r.status_code}: {r.text[:2000]}")
+        raise _llm_http_error("LLM transcribe error", r)
     content = _message_content_from_response(r.json())
     return _strip_fenced_text(content)
+
+
+def _audio_upload_mime(suffix: str) -> str:
+    return {
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".flac": "audio/flac",
+        ".webm": "audio/webm",
+    }.get(suffix.lower(), "application/octet-stream")
+
+
+def transcribe_openai_whisper(audio_bytes: bytes, *, filename_hint: str | None = None) -> str:
+    """Speech → plain text via OpenAI /v1/audio/transcriptions (whisper-1)."""
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise ValueError("Audio too large (max 25 MB)")
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        raise ValueError("OPENAI_API_KEY is not set")
+    suf = Path(filename_hint or "audio.mp3").suffix.lower()
+    if not suf or len(suf) > 6 or not suf.startswith("."):
+        suf = ".mp3"
+    fd, path = tempfile.mkstemp(suffix=suf)
+    try:
+        os.write(fd, audio_bytes)
+        os.close(fd)
+        wm = openai_whisper_model()
+        url = openai_transcriptions_url()
+        with httpx.Client(timeout=180.0) as client:
+            with open(path, "rb") as f:
+                r = client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {key}"},
+                    files={"file": (f"clip{suf}", f, _audio_upload_mime(suf))},
+                    data={"model": wm},
+                )
+        if r.status_code != 200:
+            raise ValueError(f"OpenAI transcription error {r.status_code}: {r.text[:2000]}")
+        data = r.json()
+        return (data.get("text") or "").strip()
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def audio_openrouter_format(content_type: str | None, filename: str | None) -> str:
@@ -324,9 +363,10 @@ def score_media_audio_sync(
 ) -> MediaAudioScoreResponse:
     if len(audio_bytes) > MAX_AUDIO_BYTES:
         raise ValueError("Audio too large (max 25 MB)")
+    m = normalize_model_for_backend(model)
     b64 = base64.standard_b64encode(audio_bytes).decode("ascii")
     body = {
-        "model": model,
+        "model": m,
         "messages": [
             {"role": "system", "content": MEDIA_AUDIO_SYSTEM_PROMPT},
             {
@@ -350,9 +390,9 @@ def score_media_audio_sync(
         "max_tokens": 1200,
     }
     with httpx.Client(timeout=180.0) as client:
-        r = client.post(OPENROUTER_URL, headers=_openrouter_headers(), json=body)
+        r = client.post(chat_completions_url(), headers=chat_completions_headers(), json=body)
     if r.status_code != 200:
-        raise ValueError(f"OpenRouter error {r.status_code}: {r.text[:2000]}")
+        raise _llm_http_error("LLM audio-score error", r)
     content = _message_content_from_response(r.json())
     obj = _extract_json_object(content)
     score = int(obj["score"])
@@ -366,7 +406,7 @@ def score_media_audio_sync(
         rationale=(str(obj["rationale"]).strip() if obj.get("rationale") else None),
         explanation=explanation,
         analysis=_coerce_audio_analysis(obj.get("analysis")),
-        model=model,
+        model=m,
         transcript=None,
         transcribe_model=None,
     )
@@ -382,18 +422,22 @@ def score_media_audio_via_transcript_sync(
     whisper_language: str | None = None,
 ) -> MediaAudioScoreResponse:
     """Transcribe audio (Whisper by default), then score transcript like /v1/media/text-score."""
-    tm = transcribe_model or DEFAULT_TRANSCRIBE_MODEL
-    sm = score_model or DEFAULT_IMAGE_MODEL
+    tm = transcribe_model or default_transcribe_chat_model()
+    sm = normalize_model_for_backend(score_model or default_chat_model())
     backend = os.getenv("AUDIO_TRANSCRIBE_BACKEND", "whisper").strip().lower()
     transcribe_label: str
 
     if backend in ("openrouter", "remote", "api"):
-        transcript = transcribe_audio_sync(
-            audio_bytes,
-            openrouter_format=openrouter_format,
-            model=tm,
-        )
-        transcribe_label = tm
+        if llm_backend() == "openai":
+            transcript = transcribe_openai_whisper(audio_bytes, filename_hint=filename_hint)
+            transcribe_label = f"openai:{openai_whisper_model()}"
+        else:
+            transcript = transcribe_audio_sync(
+                audio_bytes,
+                openrouter_format=openrouter_format,
+                model=tm,
+            )
+            transcribe_label = tm
     else:
         try:
             from api.whisper_transcribe import transcribe_audio_bytes_whisper, whisper_available
@@ -407,12 +451,16 @@ def score_media_audio_via_transcript_sync(
             )
             transcribe_label = f"whisper:{os.getenv('WHISPER_MODEL_SIZE', 'base')}"
         except ImportError:
-            transcript = transcribe_audio_sync(
-                audio_bytes,
-                openrouter_format=openrouter_format,
-                model=tm,
-            )
-            transcribe_label = tm
+            if llm_backend() == "openai":
+                transcript = transcribe_openai_whisper(audio_bytes, filename_hint=filename_hint)
+                transcribe_label = f"openai:{openai_whisper_model()}"
+            else:
+                transcript = transcribe_audio_sync(
+                    audio_bytes,
+                    openrouter_format=openrouter_format,
+                    model=tm,
+                )
+                transcribe_label = tm
 
     tnorm = transcript.strip()
     if len(tnorm) < 2 or tnorm.lower() in ("[inaudible]", "inaudible", "(inaudible)"):
@@ -441,8 +489,9 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
         raise ValueError("Empty text")
     if len(t) > MAX_TEXT_CHARS:
         t = t[:MAX_TEXT_CHARS]
+    m = normalize_model_for_backend(model)
     body = {
-        "model": model,
+        "model": m,
         "messages": [
             {"role": "system", "content": MEDIA_TEXT_SYSTEM_PROMPT},
             {
@@ -458,9 +507,9 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
         "max_tokens": 1200,
     }
     with httpx.Client(timeout=120.0) as client:
-        r = client.post(OPENROUTER_URL, headers=_openrouter_headers(), json=body)
+        r = client.post(chat_completions_url(), headers=chat_completions_headers(), json=body)
     if r.status_code != 200:
-        raise ValueError(f"OpenRouter error {r.status_code}: {r.text[:2000]}")
+        raise _llm_http_error("LLM text-score error", r)
     content = _message_content_from_response(r.json())
     obj = _extract_json_object(content)
     score = int(obj["score"])
@@ -477,7 +526,7 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
         rationale=(str(obj["rationale"]).strip() if obj.get("rationale") else None),
         explanation=explanation,
         analysis=_coerce_text_analysis(obj.get("analysis")),
-        model=model,
+        model=m,
     )
 
 
@@ -488,7 +537,9 @@ def score_media_text_sync(text: str, model: str) -> MediaTextScoreResponse:
 )
 async def media_image_score(
     image: UploadFile = File(..., description="Image (JPEG, PNG, WebP, …)."),
-    model: str | None = Query(None, description="OpenRouter model id (default OPENROUTER_MODEL)."),
+    model: str | None = Query(
+        None, description="Vision model id (default OPENAI_MODEL or OPENROUTER_MODEL per LLM_BACKEND)."
+    ),
 ) -> MediaImageScoreResponse:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(
@@ -496,7 +547,7 @@ async def media_image_score(
             detail="Upload an image file (image/jpeg, image/png, image/webp, …).",
         )
     raw = await image.read()
-    use_model = model or DEFAULT_IMAGE_MODEL
+    use_model = model or default_chat_model()
     try:
         return await asyncio.to_thread(
             score_media_image_sync, raw, image.content_type, use_model
@@ -549,7 +600,7 @@ async def media_audio_score(
     fmt = audio_openrouter_format(audio.content_type, audio.filename)
     try:
         if direct:
-            use_model = model or DEFAULT_AUDIO_MODEL
+            use_model = model or default_audio_chat_model()
             return await asyncio.to_thread(
                 score_media_audio_sync, raw, openrouter_format=fmt, model=use_model
             )
@@ -579,9 +630,11 @@ async def media_audio_score(
 )
 async def media_text_score(
     body: MediaTextScoreIn,
-    model: str | None = Query(None, description="OpenRouter text model (default OPENROUTER_MODEL)."),
+    model: str | None = Query(
+        None, description="Chat model id (default OPENAI_MODEL or OPENROUTER_MODEL per LLM_BACKEND)."
+    ),
 ) -> MediaTextScoreResponse:
-    use_model = model or DEFAULT_IMAGE_MODEL
+    use_model = model or default_chat_model()
     try:
         return await asyncio.to_thread(score_media_text_sync, body.text, use_model)
     except HTTPException:

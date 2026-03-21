@@ -6,7 +6,7 @@ heuristically map place-like labels to numeric scores, merge into a JSON file, a
 Edit the CONFIG block below for default behavior. CLI flags override those defaults.
 
 Downloads image/audio URLs from the page into MEDIA_DOWNLOAD_DIR and can score them via OpenRouter
-(same idea as POST /v1/media/*-score); for scoring, install: pip install -r api/requirements.txt and set OPENROUTER_API_KEY.
+(same idea as POST /v1/media/*-score); for scoring, install: pip install -r api/requirements.txt and set OPENAI_API_KEY or OPENROUTER_API_KEY.
 
 With HARVEST_MEDIA_SEED_UI_PANELS (default True), Playwright is required — install playwright + chromium.
 Use --browser if you disable harvest but still need a rendered page.
@@ -76,7 +76,7 @@ DOWNLOAD_PAGE_MEDIA = True
 MEDIA_DOWNLOAD_DIR = "media_seed_downloads"
 MAX_MEDIA_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_MEDIA_ITEMS_PER_CRAWL = 12
-# After download, call OpenRouter (same 1–100 + explanation as API; needs OPENROUTER_API_KEY)
+# After download, call OpenAI or OpenRouter (same 1–100 + explanation as API; needs OPENAI_API_KEY or OPENROUTER_API_KEY)
 SCORE_DOWNLOADED_MEDIA_OPENROUTER = True
 # Use Playwright to read the three app panels (Audio / Paragraph Text / Image) and save real
 # files (including blob: previews) — not a full-page screenshot and not random site chrome images.
@@ -862,6 +862,7 @@ def export_keys_from_media_openrouter(media_downloads: list[dict[str, Any]]) -> 
 
 def score_media_items_with_openrouter(items: list[dict[str, Any]]) -> None:
     from api import media_score as ms
+    from api.llm_provider import default_chat_model
 
     whisper_lang = _whisper_language_hint_from_crawl_items(items)
     if whisper_lang:
@@ -877,7 +878,7 @@ def score_media_items_with_openrouter(items: list[dict[str, Any]]) -> None:
         try:
             if it.get("kind") == "text":
                 txt = p.read_text(encoding="utf-8", errors="replace")
-                res = ms.score_media_text_sync(txt, ms.DEFAULT_IMAGE_MODEL)
+                res = ms.score_media_text_sync(txt, default_chat_model())
                 it["openrouter"] = res.model_dump()
                 continue
             data = p.read_bytes()
@@ -893,7 +894,7 @@ def score_media_items_with_openrouter(items: list[dict[str, Any]]) -> None:
                 mime = it.get("content_type") or mimetypes.guess_type(p.name)[0] or "image/jpeg"
                 if not mime.startswith("image/"):
                     mime = "image/jpeg"
-                res = ms.score_media_image_sync(data, mime, ms.DEFAULT_IMAGE_MODEL)
+                res = ms.score_media_image_sync(data, mime, default_chat_model())
             it["openrouter"] = res.model_dump()
         except Exception as e:
             logging.exception("OpenRouter scoring failed for %s", it.get("url"))
@@ -1055,9 +1056,9 @@ def run_once(args: argparse.Namespace) -> dict[str, str]:
             logging.exception("Media download batch failed")
 
     if wants_openrouter and media_downloads:
-        if not os.getenv("OPENROUTER_API_KEY"):
+        if not (os.getenv("OPENAI_API_KEY", "").strip() or os.getenv("OPENROUTER_API_KEY", "").strip()):
             logging.warning(
-                "Skipping OpenRouter media scoring: OPENROUTER_API_KEY not set (see .env.example)"
+                "Skipping LLM media scoring: set OPENAI_API_KEY or OPENROUTER_API_KEY (see .env.example)"
             )
         else:
             try:
@@ -1074,7 +1075,7 @@ def run_once(args: argparse.Namespace) -> dict[str, str]:
     if not merged_scores:
         logging.warning(
             "No scores in export: no location:text patterns on the page and no OpenRouter media scores "
-            "(check downloads + OPENROUTER_API_KEY + api/requirements.txt)."
+            "(check downloads + OPENAI_API_KEY or OPENROUTER_API_KEY + api/requirements.txt)."
         )
 
     out_path = Path(args.output)
