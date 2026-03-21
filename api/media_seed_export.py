@@ -19,6 +19,8 @@ router = APIRouter(tags=["media-seed"])
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_EXPORT = _REPO_ROOT / "media_seed_export.json"
+# API `route` field for every image score (override with env for different deployments).
+_IMAGE_ROUTE_LABEL = os.getenv("MEDIA_SEED_IMAGE_ROUTE_NAME", "Ngã tư Phú Nhuận").strip() or "Ngã tư Phú Nhuận"
 
 
 def _export_path() -> Path:
@@ -197,6 +199,9 @@ def _derive_route_label(
     otherwise heuristics on export keys / filenames.
     """
     kind = (item or {}).get("kind") if item else None
+    if kind == "image" or (export_key and export_key.startswith("image:")):
+        return _IMAGE_ROUTE_LABEL
+
     analysis = o.get("analysis") if isinstance(o, dict) and isinstance(o.get("analysis"), dict) else None
 
     if kind == "text" and export_key and not export_key.startswith(("image:", "audio:", "crawl:")):
@@ -209,14 +214,6 @@ def _derive_route_label(
         if isinstance(summary, str) and summary.strip():
             return _first_sentence(_strip_summary_boilerplate(summary), 140)
 
-    if analysis and kind == "image":
-        sc = (analysis.get("scene_context") or "").strip()
-        if sc:
-            return _first_sentence(f"Road conditions (photo): {sc}", 130)
-        rat = (o or {}).get("rationale")
-        if isinstance(rat, str) and rat.strip():
-            return _first_sentence(f"Road conditions (photo): {rat.strip()}", 130)
-
     if analysis and kind == "audio":
         ts = (analysis.get("transcription_summary") or "").strip()
         if ts:
@@ -225,11 +222,6 @@ def _derive_route_label(
         if isinstance(tr, str) and tr.strip():
             return _first_sentence(f"Audio traffic report: {tr.strip()}", 130)
 
-    if o and kind == "image":
-        rat = (o.get("rationale") or "").strip()
-        if rat:
-            return _first_sentence(f"Road conditions (photo): {rat}", 120)
-
     if o and kind == "audio":
         rat = (o.get("rationale") or "").strip()
         if rat:
@@ -237,10 +229,6 @@ def _derive_route_label(
 
     if export_key and not export_key.startswith(("image:", "audio:", "crawl:")):
         return _label_from_prose_export_key(export_key)
-
-    if export_key.startswith("image:"):
-        stem = _clean_filename_stem(export_key, "image:")
-        return f"Road image ({stem})"
 
     if export_key.startswith("audio:"):
         stem = _clean_filename_stem(export_key, "audio:")
@@ -273,7 +261,7 @@ def build_route_results(data: dict[str, Any]) -> list[dict[str, Any]]:
 class RouteScoreEntry(BaseModel):
     route: str = Field(
         ...,
-        description="Human-readable route or road-segment label (from OpenRouter analysis or text heuristics).",
+        description="Route label; all image scores use Ngã tư Phú Nhuận (MEDIA_SEED_IMAGE_ROUTE_NAME). Text/audio: analysis/heuristics.",
     )
     score: int = Field(
         ...,
@@ -306,9 +294,9 @@ class MediaSeedLatestResponse(BaseModel):
     summary="Latest route scores from media seed export",
     description=(
         "Reads `media_seed_export.json` and returns **routes**: each **route** (short human-readable label), "
-        "**score** (1 = best to travel, 100 = worst), and **reason**. Labels are derived from OpenRouter "
-        "`analysis` when available (same crawl already ran an LLM); otherwise from paragraph text or cleaned "
-        "filenames. Set `full=true` for the raw export under **export**. "
+        "**score** (1 = best to travel, 100 = worst), and **reason**. Every **image** score uses the same "
+        "route label (default **Ngã tư Phú Nhuận**; override with **MEDIA_SEED_IMAGE_ROUTE_NAME**). Text/audio "
+        "labels use OpenRouter `analysis` or heuristics. Set `full=true` for the raw export under **export**. "
         "Override path with `MEDIA_SEED_EXPORT_PATH`."
     ),
     responses={

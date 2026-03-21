@@ -5,7 +5,7 @@ info:
     Score a road/street image from **1** (best — good street to use) to **100** (worst).
     Responses include a short **rationale**, a longer **explanation**, and structured **analysis**
     (pavement, visibility, hazards, context). Backend uses **OpenRouter** vision models.
-  version: 1.5.0
+  version: 1.5.1
 
 servers:
   - url: http://localhost:8000
@@ -97,9 +97,9 @@ paths:
     get:
       summary: Latest route scores from media seed export
       description: |
-        Returns **routes** only: each item has **route** (short human-readable label from OpenRouter `analysis`
-        or heuristics), **score** (1–100, 1 = best route), and **reason**. No raw `image:…` / `audio:…` keys in
-        labels when model output is present. `full=true` adds the raw export under **export**.
+        Returns **routes** only: **route**, **score** (1–100), **reason**. Every **image** uses the same
+        **route** label (default **Ngã tư Phú Nhuận**; env **MEDIA_SEED_IMAGE_ROUTE_NAME**). Text/audio labels
+        use OpenRouter `analysis` or heuristics. `full=true` adds the raw export under **export**.
         Default file: `media_seed_export.json`; override with `MEDIA_SEED_EXPORT_PATH`.
       operationId: getMediaSeedLatest
       tags:
@@ -194,7 +194,8 @@ components:
       properties:
         route:
           type: string
-          description: Human-readable route or segment title (from OpenRouter analysis or text/filename heuristics).
+          description: Route or segment title; every image score uses Ngã tư Phú Nhuận (or MEDIA_SEED_IMAGE_ROUTE_NAME).
+          example: "Ngã tư Phú Nhuận"
         score:
           type: integer
           minimum: 1

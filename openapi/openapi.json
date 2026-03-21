@@ -3,7 +3,7 @@
   "info": {
     "title": "Road score API",
     "description": "Score a road/street image from **1** (best — good street to use) to **100** (worst).\nResponses include a short **rationale**, a longer **explanation**, and structured **analysis**\n(pavement, visibility, hazards, context). Backend uses **OpenRouter** vision models.\n",
-    "version": "1.5.0"
+    "version": "1.5.1"
   },
   "servers": [
     {
@@ -134,7 +134,7 @@
     "/v1/media-seed/latest": {
       "get": {
         "summary": "Latest route scores from media seed export",
-        "description": "Returns **routes** only: **route** (human-readable label), **score** (1–100), **reason**. Labels use OpenRouter `analysis` when present. `full=true` adds raw **export**.\nDefault: `media_seed_export.json`; override with `MEDIA_SEED_EXPORT_PATH`.\n",
+        "description": "Returns **routes** only: **route**, **score** (1–100), **reason**. All **image** scores use route **Ngã tư Phú Nhuận** (env **MEDIA_SEED_IMAGE_ROUTE_NAME**). Text/audio use `analysis`/heuristics. `full=true` adds **export**.\nDefault: `media_seed_export.json`; **MEDIA_SEED_EXPORT_PATH**.\n",
         "operationId": "getMediaSeedLatest",
         "tags": ["media-seed"],
         "parameters": [
@@ -252,7 +252,8 @@
         "properties": {
           "route": {
             "type": "string",
-            "description": "Human-readable route or segment title (from OpenRouter analysis or heuristics)."
+            "description": "Route or segment title; every image score uses Ngã tư Phú Nhuận (or MEDIA_SEED_IMAGE_ROUTE_NAME).",
+            "example": "Ngã tư Phú Nhuận"
           },
           "score": {
             "type": "integer",
