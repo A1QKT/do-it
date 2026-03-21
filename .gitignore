@@ -52,8 +52,11 @@ Thumbs.db
 # .vscode/
 
 # --- This project: streaming / STT runtime files ---
+media_seed_downloads/
 transcribe.log
 transcribe.pid
+api.log
+crawl.log
 *.pid
 # Default local transcript output (remove this line if you want to commit it)
 transcript.txt

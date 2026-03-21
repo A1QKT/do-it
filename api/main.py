@@ -17,33 +17,17 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from api.media_score import router as media_score_router
+from api.media_seed_export import router as media_seed_export_router
+from api.prompts import ROAD_VISION_SYSTEM_PROMPT
+
 load_dotenv()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
 
-SYSTEM_PROMPT = """You assess a road/street from a single image for how good it is to travel on (car or pedestrian).
-
-Return ONLY valid JSON (no markdown fences) with this exact structure:
-{
-  "score": <integer 1-100>,
-  "rationale": "<one concise sentence — headline reason for the score>",
-  "explanation": "<2-5 sentences for a user: plain language, what you see and why that drives the score>",
-  "analysis": {
-    "pavement_surface": "<pavement type, cracks/potholes, lane markings, ride quality from what is visible>",
-    "visibility_environment": "<sight lines, lighting, weather, glare, clutter affecting visibility>",
-    "hazards_constraints": "<obstructions, water/flooding, construction, parked vehicles, pedestrians, sharp curves, debris>",
-    "scene_context": "<urban/rural, approximate setting, traffic hints, sidewalks/crossings if visible — only from the image>"
-  }
-}
-
-Scoring scale:
-- score = 1  → excellent: smooth pavement, clear lanes, safe, well maintained, good visibility.
-- score = 100 → worst: severe damage, flooding, major obstruction, dangerous surface, or effectively unusable.
-
-Use whole integers for score only. Be factual; if something is not visible, say so in that field rather than guessing.
-Do not invent traffic counts or speeds. Base everything on the image."""
+SYSTEM_PROMPT = ROAD_VISION_SYSTEM_PROMPT
 
 
 class RoadAnalysis(BaseModel):
@@ -92,7 +76,7 @@ def _cors_origins() -> list[str]:
 app = FastAPI(
     title="Road score API",
     description="Image → road quality score (1 best, 100 worst), explanation, and structured analysis via OpenRouter vision.",
-    version="1.1.0",
+    version="1.4.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +85,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(media_score_router, prefix="/v1")
+app.include_router(media_seed_export_router, prefix="/v1")
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:

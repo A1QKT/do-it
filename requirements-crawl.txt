@@ -1,0 +1,17 @@
+# Media Seed Bot crawler (scripts/media_seed_crawl.py)
+#
+# Install (from repo root, venv active):
+#   pip install -r requirements-crawl.txt
+#   python -m playwright install chromium
+#
+# The second line downloads Chromium + headless shell (~150MB+) into Playwright’s cache
+# (e.g. ~/Library/Caches/ms-playwright on macOS). Required for default UI-panel harvest
+# (HARVEST_MEDIA_SEED_UI_PANELS) and --browser. ./script/crawl.sh runs it unless
+# CRAWL_NO_PLAYWRIGHT_INSTALL=1.
+
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+
+# Browser automation (needs: python -m playwright install chromium)
+playwright>=1.40.0
