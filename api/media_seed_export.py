@@ -1,10 +1,11 @@
 """
-GET /v1/media-seed/latest — route names → traffic mobility scores (1 best … 100 worst) + reasons from export.
+GET /v1/media-seed/latest — human-readable route labels, scores (1 best … 100 worst), reasons from export.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,10 +56,12 @@ def _export_key_for_scored_media_item(item: dict[str, Any], idx: int) -> str:
     return f"crawl:{kind}:{idx}"
 
 
-def _openrouter_key_map(media_downloads: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Export key → openrouter payload (same collision rules as the crawler)."""
+def _export_key_to_scored_media(
+    media_downloads: list[dict[str, Any]],
+) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    """Export key → (media row, openrouter payload)."""
     seen: dict[str, bool] = {}
-    out: dict[str, dict[str, Any]] = {}
+    out: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for idx, item in enumerate(media_downloads):
         o = item.get("openrouter")
         if not isinstance(o, dict) or o.get("error"):
@@ -76,7 +79,7 @@ def _openrouter_key_map(media_downloads: list[dict[str, Any]]) -> dict[str, dict
             key = f"{base} ({n})"
             n += 1
         seen[key] = True
-        out[key] = o
+        out[key] = (item, o)
     return out
 
 
@@ -121,43 +124,157 @@ def _score_key_order(data: dict[str, Any]) -> list[str]:
     return sorted(out)
 
 
-def build_route_results(data: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+_SUMMARY_PREFIXES = (
+    "the paragraph states that ",
+    "the paragraph describes ",
+    "it details ",
+    "it states that ",
+    "the text states that ",
+    "the text describes ",
+)
+
+
+def _strip_summary_boilerplate(s: str) -> str:
+    t = s.strip()
+    low = t.lower()
+    for p in _SUMMARY_PREFIXES:
+        if low.startswith(p):
+            t = t[len(p) :].strip()
+            low = t.lower()
+    return t
+
+
+def _truncate_at_word(s: str, max_len: int) -> str:
+    s = s.strip()
+    if len(s) <= max_len:
+        return s
+    cut = s[: max_len - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+def _first_sentence(s: str, max_len: int = 140) -> str:
+    s = s.strip()
+    if not s:
+        return ""
+    for sep in ".!?。":
+        pos = s.find(sep)
+        if 0 < pos < min(len(s) - 1, max_len + 40):
+            frag = s[: pos + 1].strip()
+            if len(frag) <= max_len + 30:
+                return _truncate_at_word(frag, max_len)
+    return _truncate_at_word(s, max_len)
+
+
+def _label_from_prose_export_key(export_key: str) -> str:
+    """Short corridor-style title from paragraph text keys (not image:/audio:)."""
+    key = export_key.strip()
+    if not key:
+        return "Route report"
+    parts = [p.strip() for p in key.split(",") if p.strip()]
+    if len(parts) >= 2 and re.search(r"đoạn|from|to|đến", parts[1], re.I):
+        merged = f"{parts[0]}, {parts[1]}"
+        return _truncate_at_word(merged, 120)
+    return _truncate_at_word(parts[0], 120)
+
+
+def _clean_filename_stem(export_key: str, prefix: str) -> str:
+    rest = export_key[len(prefix) :].strip() if export_key.startswith(prefix) else export_key
+    stem = Path(rest).stem
+    stem = re.sub(r"_[0-9a-f]{6,}$", "", stem, flags=re.I)
+    stem = re.sub(r"^\d+-", "", stem)
+    return stem.strip() or "upload"
+
+
+def _derive_route_label(
+    export_key: str,
+    item: dict[str, Any] | None,
+    o: dict[str, Any] | None,
+) -> str:
+    """
+    Human-readable route / segment title. Uses OpenRouter `analysis` when present (already LLM-derived);
+    otherwise heuristics on export keys / filenames.
+    """
+    kind = (item or {}).get("kind") if item else None
+    analysis = o.get("analysis") if isinstance(o, dict) and isinstance(o.get("analysis"), dict) else None
+
+    if kind == "text" and export_key and not export_key.startswith(("image:", "audio:", "crawl:")):
+        prose = _label_from_prose_export_key(export_key)
+        if len(prose) >= 8:
+            return prose
+
+    if analysis and kind == "text":
+        summary = analysis.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return _first_sentence(_strip_summary_boilerplate(summary), 140)
+
+    if analysis and kind == "image":
+        sc = (analysis.get("scene_context") or "").strip()
+        if sc:
+            return _first_sentence(f"Road conditions (photo): {sc}", 130)
+        rat = (o or {}).get("rationale")
+        if isinstance(rat, str) and rat.strip():
+            return _first_sentence(f"Road conditions (photo): {rat.strip()}", 130)
+
+    if analysis and kind == "audio":
+        ts = (analysis.get("transcription_summary") or "").strip()
+        if ts:
+            return _first_sentence(f"Audio traffic report: {ts}", 130)
+        tr = (o or {}).get("transcript")
+        if isinstance(tr, str) and tr.strip():
+            return _first_sentence(f"Audio traffic report: {tr.strip()}", 130)
+
+    if o and kind == "image":
+        rat = (o.get("rationale") or "").strip()
+        if rat:
+            return _first_sentence(f"Road conditions (photo): {rat}", 120)
+
+    if o and kind == "audio":
+        rat = (o.get("rationale") or "").strip()
+        if rat:
+            return _first_sentence(f"Audio clip: {rat}", 120)
+
+    if export_key and not export_key.startswith(("image:", "audio:", "crawl:")):
+        return _label_from_prose_export_key(export_key)
+
+    if export_key.startswith("image:"):
+        stem = _clean_filename_stem(export_key, "image:")
+        return f"Road image ({stem})"
+
+    if export_key.startswith("audio:"):
+        stem = _clean_filename_stem(export_key, "audio:")
+        return _truncate_at_word(f"Audio clip ({stem})", 100)
+
+    return _truncate_at_word(export_key, 120) if export_key else "Unknown segment"
+
+
+def build_route_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
     media = meta.get("media_downloads") if isinstance(meta.get("media_downloads"), list) else []
     media_list = [x for x in media if isinstance(x, dict)]
-    or_map = _openrouter_key_map(media_list)
+    key_to_media = _export_key_to_scored_media(media_list)
 
     routes: list[dict[str, Any]] = []
-    routes_map: dict[str, dict[str, Any]] = {}
-    for name in _score_key_order(data):
-        sc = _parse_score_value(data[name])
+    for export_key in _score_key_order(data):
+        sc = _parse_score_value(data[export_key])
         if sc is None:
             continue
-        o = or_map.get(name)
+        pair = key_to_media.get(export_key)
+        item, o = pair if pair else (None, None)
         reason = _reason_from_openrouter(o) if o else ""
         if not reason:
             reason = "No model explanation in export for this key (score may come from page text heuristics)."
-        entry = {"name": name, "score": sc, "reason": reason}
-        routes.append(entry)
-        routes_map[name] = {"score": sc, "reason": reason}
-    return routes, routes_map
-
-
-class RouteScoreValue(BaseModel):
-    score: int = Field(
-        ...,
-        ge=1,
-        le=100,
-        description="Route / segment mobility quality: 1 = best route to use, 100 = worst.",
-    )
-    reason: str = Field(
-        ...,
-        description="Why this score (OpenRouter explanation/rationale when available).",
-    )
+        route = _derive_route_label(export_key, item, o)
+        routes.append({"route": route, "score": sc, "reason": reason})
+    return routes
 
 
 class RouteScoreEntry(BaseModel):
-    name: str = Field(..., description="Route label / export key (e.g. corridor text, image:file, audio:file).")
+    route: str = Field(
+        ...,
+        description="Human-readable route or road-segment label (from OpenRouter analysis or text heuristics).",
+    )
     score: int = Field(
         ...,
         ge=1,
@@ -175,10 +292,6 @@ class MediaSeedLatestResponse(BaseModel):
         ...,
         description="Ordered route scores with reasons (order from score_keys_this_run when present).",
     )
-    routes_map: dict[str, RouteScoreValue] = Field(
-        ...,
-        description="Same data as a map: route name → score and reason.",
-    )
     crawled_at: str | None = Field(None, description="ISO timestamp from export _meta when present.")
     source_url: str | None = Field(None, description="Crawled page URL from export _meta when present.")
     export: dict[str, Any] | None = Field(
@@ -192,11 +305,11 @@ class MediaSeedLatestResponse(BaseModel):
     response_model=MediaSeedLatestResponse,
     summary="Latest route scores from media seed export",
     description=(
-        "Reads `media_seed_export.json` and returns **routes**: each **name** (route/segment key), "
-        "**score** (1 = best to travel, 100 = worst), and **reason** (model text when available). "
-        "**routes_map** is the same as a name → {score, reason} object. "
-        "Set `full=true` to include the raw export under **export**. "
-        "Override file path with `MEDIA_SEED_EXPORT_PATH`."
+        "Reads `media_seed_export.json` and returns **routes**: each **route** (short human-readable label), "
+        "**score** (1 = best to travel, 100 = worst), and **reason**. Labels are derived from OpenRouter "
+        "`analysis` when available (same crawl already ran an LLM); otherwise from paragraph text or cleaned "
+        "filenames. Set `full=true` for the raw export under **export**. "
+        "Override path with `MEDIA_SEED_EXPORT_PATH`."
     ),
     responses={
         404: {"description": "Export file does not exist"},
@@ -235,9 +348,8 @@ async def get_media_seed_latest(
             detail="Export file root must be a JSON object",
         )
 
-    routes_list, routes_map_raw = build_route_results(data)
+    routes_list = build_route_results(data)
     routes = [RouteScoreEntry(**r) for r in routes_list]
-    routes_map = {k: RouteScoreValue(**v) for k, v in routes_map_raw.items()}
 
     meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
     crawled = meta.get("crawled_at")
@@ -247,7 +359,6 @@ async def get_media_seed_latest(
 
     return MediaSeedLatestResponse(
         routes=routes,
-        routes_map=routes_map,
         crawled_at=crawled_at,
         source_url=source_url,
         export=data if full else None,

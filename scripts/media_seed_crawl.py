@@ -21,6 +21,7 @@ import logging
 import mimetypes
 import os
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,9 +130,44 @@ def fetch_html(url: str, timeout: float) -> tuple[str, dict[str, Any]]:
         return r.text, meta
 
 
+def _chromium_launch_args() -> list[str]:
+    """Flags for headless Chromium on Linux servers, Docker, and when euid is root (sandbox not allowed)."""
+    args: list[str] = []
+    if sys.platform == "linux":
+        # Small /dev/shm in containers often crashes Chromium without this.
+        args.append("--disable-dev-shm-usage")
+
+    _truthy = {"1", "true", "yes", "on"}
+    no_sandbox_env = os.getenv("PLAYWRIGHT_CHROMIUM_NO_SANDBOX", "").strip().lower() in _truthy
+    ci = os.getenv("CI", "").strip().lower() in _truthy
+    root = False
+    ge = getattr(os, "geteuid", None)
+    if callable(ge):
+        try:
+            root = ge() == 0
+        except OSError:
+            pass
+
+    if root or no_sandbox_env or ci:
+        args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+
+    extra = os.getenv("PLAYWRIGHT_CHROMIUM_EXTRA_ARGS", "").strip()
+    if extra:
+        args.extend(shlex.split(extra))
+    return args
+
+
 def _launch_chromium(p: Any, *, headless: bool = True) -> Any:
+    launch_args = _chromium_launch_args()
+    kw: dict[str, Any] = {"headless": headless}
+    if launch_args:
+        kw["args"] = launch_args
+
+    def _go(k: dict[str, Any]) -> Any:
+        return p.chromium.launch(**k)
+
     try:
-        return p.chromium.launch(headless=headless)
+        return _go(kw)
     except Exception as e:
         err = str(e).lower()
         if "executable doesn't exist" in err or "download new browsers" in err:
@@ -140,6 +176,34 @@ def _launch_chromium(p: Any, *, headless: bool = True) -> Any:
                 "  python -m playwright install chromium\n"
                 "(use the same venv as the crawl, e.g. venv/bin/python -m playwright install chromium)\n"
                 "./script/crawl.sh runs this automatically unless CRAWL_NO_PLAYWRIGHT_INSTALL=1."
+            ) from e
+        closed = "target closed" in err or "has been closed" in err or "browser has been closed" in err
+        # Docker / hardened images often need --no-sandbox even when not root; retry once.
+        if closed and "--no-sandbox" not in launch_args:
+            retry_kw = {
+                "headless": headless,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            }
+            try:
+                return _go(retry_kw)
+            except Exception as e2:
+                e = e2
+                err = str(e2).lower()
+                closed = "target closed" in err or "has been closed" in err or "browser has been closed" in err
+        if closed:
+            raise RuntimeError(
+                "Playwright Chromium exited right after launch. Typical fixes:\n"
+                "  • If running as root (euid 0): Chromium needs --no-sandbox (enabled automatically; "
+                "or set PLAYWRIGHT_CHROMIUM_NO_SANDBOX=1).\n"
+                "  • In Docker: mount a larger /dev/shm (e.g. docker run --shm-size=1g) or rely on "
+                "--disable-dev-shm-usage (added on Linux).\n"
+                "  • Install OS libraries: python -m playwright install-deps chromium (Debian/Ubuntu).\n"
+                "  • Extra flags: PLAYWRIGHT_CHROMIUM_EXTRA_ARGS e.g. --single-process (last resort)."
             ) from e
         raise
 
