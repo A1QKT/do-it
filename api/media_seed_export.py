@@ -20,11 +20,11 @@ router = APIRouter(tags=["media-seed"])
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_EXPORT = _REPO_ROOT / "media_seed_export.json"
 # API `route` field for every image score (override with env for different deployments).
-_IMAGE_ROUTE_LABEL = os.getenv("MEDIA_SEED_IMAGE_ROUTE_NAME", "Ngã tư Phú Nhuận").strip() or "Ngã tư Phú Nhuận"
+_IMAGE_ROUTE_LABEL = os.getenv("MEDIA_SEED_IMAGE_ROUTE_NAME", "Ngã 4 Phú Nhuận").strip() or "Ngã 4 Phú Nhuận"
 
 # Intersection / junction style labels (node), vs corridor segment (route).
 _NODE_LABEL_RE = re.compile(
-    r"(?i)\b(ngã\s+tư|giao\s+lộ|vòng\s+xuyến|intersection)\b",
+    r"(?i)\b(ngã\s*tư|ngã\s*4|giao\s+lộ|vòng\s+xuyến|intersection)\b",
 )
 _CORRIDOR_HINT_RE = re.compile(
     r"(?i)(đoạn\s+từ|đoạn\s|tuyến\s+.+\s*,|route\s+from|segment\s+from)",
@@ -247,7 +247,7 @@ def _derive_route_label(
 
 def _is_traffic_node(route: str, export_key: str, item: dict[str, Any] | None) -> bool:
     """
-    True for intersection-style points (e.g. Ngã tư Phú Nhuận); False for corridor / segment routes.
+    True for intersection-style points (e.g. Ngã 4 Phú Nhuận); False for corridor / segment routes.
     """
     kind = (item or {}).get("kind") if item else None
     if kind == "image" or (export_key and export_key.startswith("image:")):
@@ -292,11 +292,11 @@ def build_route_results(data: dict[str, Any]) -> list[dict[str, Any]]:
 class RouteScoreEntry(BaseModel):
     route: str = Field(
         ...,
-        description="Route label; all image scores use Ngã tư Phú Nhuận (MEDIA_SEED_IMAGE_ROUTE_NAME). Text/audio: analysis/heuristics.",
+        description="Route label; all image scores use Ngã 4 Phú Nhuận (MEDIA_SEED_IMAGE_ROUTE_NAME). Text/audio: analysis/heuristics.",
     )
     node: bool = Field(
         ...,
-        description="True if this row is an intersection/node (e.g. Ngã tư …); False if a corridor/segment route.",
+        description="True if this row is an intersection/node (e.g. Ngã 4 …); False if a corridor/segment route.",
     )
     score: int = Field(
         ...,
@@ -329,8 +329,8 @@ class MediaSeedLatestResponse(BaseModel):
     summary="Latest route scores from media seed export",
     description=(
         "Reads `media_seed_export.json` and returns **routes**: **route**, **node** (true for intersections "
-        "like Ngã tư …, false for corridor segments), **score**, **reason**. Images use the fixed node label "
-        "(default **Ngã tư Phú Nhuận**). Set `full=true` for the raw export under **export**. "
+        "like Ngã 4 / Ngã tư …, false for corridor segments), **score**, **reason**. Images use the fixed node label "
+        "(default **Ngã 4 Phú Nhuận**). Set `full=true` for the raw export under **export**. "
         "Override path with `MEDIA_SEED_EXPORT_PATH`."
     ),
     responses={

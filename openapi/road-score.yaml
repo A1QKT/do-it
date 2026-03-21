@@ -5,7 +5,7 @@ info:
     Score a road/street image from **1** (best — good street to use) to **100** (worst).
     Responses include a short **rationale**, a longer **explanation**, and structured **analysis**
     (pavement, visibility, hazards, context). Backend uses **OpenRouter** vision models.
-  version: 1.5.2
+  version: 1.5.3
 
 servers:
   - url: http://localhost:8000
@@ -98,7 +98,7 @@ paths:
       summary: Latest route scores from media seed export
       description: |
         Returns **routes**: **route**, **node** (true = intersection/junction, false = corridor segment),
-        **score** (1–100), **reason**. Images use the fixed node label (default **Ngã tư Phú Nhuận**).
+        **score** (1–100), **reason**. Images use the fixed node label (default **Ngã 4 Phú Nhuận**).
         `full=true` adds the raw export under **export**.
         Default file: `media_seed_export.json`; override with `MEDIA_SEED_EXPORT_PATH`.
       operationId: getMediaSeedLatest
@@ -195,11 +195,11 @@ components:
       properties:
         route:
           type: string
-          description: Route or segment title; every image score uses Ngã tư Phú Nhuận (or MEDIA_SEED_IMAGE_ROUTE_NAME).
-          example: "Ngã tư Phú Nhuận"
+          description: Route or segment title; every image score uses Ngã 4 Phú Nhuận (or MEDIA_SEED_IMAGE_ROUTE_NAME).
+          example: "Ngã 4 Phú Nhuận"
         node:
           type: boolean
-          description: True if intersection/node (e.g. Ngã tư …); false if corridor/segment route.
+          description: True if intersection/node (e.g. Ngã 4 / Ngã tư …); false if corridor/segment route.
         score:
           type: integer
           minimum: 1
