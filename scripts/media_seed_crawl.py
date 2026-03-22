@@ -62,7 +62,7 @@ def _load_dotenv() -> None:
 # =============================================================================
 # Repeat crawling until Ctrl+C, sleeping this many seconds between runs.
 CRAWL_LOOP_FOREVER = True
-CRAWL_INTERVAL_SECONDS = 60
+CRAWL_INTERVAL_SECONDS = 10
 # JSON output path (override: -o / --output)
 DEFAULT_OUTPUT_PATH = "media_seed_export.json"
 # Max characters of HTML stored under _meta.raw.html_preview (0 = omit preview text)
