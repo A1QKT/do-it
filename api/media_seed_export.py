@@ -122,11 +122,16 @@ def _parse_score_value(raw: Any) -> int | None:
 
 def _score_key_order(data: dict[str, Any]) -> list[str]:
     meta = data.get("_meta")
+    # When the crawler wrote _meta.score_keys_this_run (including []), only those keys count for "latest".
+    # Otherwise an empty crawl would fall through and expose stale top-level keys from previous runs.
+    if isinstance(meta, dict) and "score_keys_this_run" in meta:
+        v = meta["score_keys_this_run"]
+        if isinstance(v, list):
+            return [str(x) for x in v if isinstance(x, str)]
     if isinstance(meta, dict):
-        for k in ("score_keys_this_run", "openrouter_media_score_keys"):
-            v = meta.get(k)
-            if isinstance(v, list) and v:
-                return [str(x) for x in v if isinstance(x, str)]
+        v = meta.get("openrouter_media_score_keys")
+        if isinstance(v, list) and v:
+            return [str(x) for x in v if isinstance(x, str)]
     out: list[str] = []
     for k in data:
         if k == "_meta":
@@ -349,10 +354,9 @@ class MediaSeedLatestResponse(BaseModel):
     response_model=MediaSeedLatestResponse,
     summary="Latest route scores from media seed export",
     description=(
-        "Reads `media_seed_export.json` and returns **routes**: **route**, **node** (true for intersections "
-        "like Ngã 4 / Ngã tư …, false for corridor segments), **score**, **reason**. Images use the fixed node label "
-        "(default **Ngã 4 Phú Nhuận**). Set `full=true` for the raw export under **export**. "
-        "Override path with `MEDIA_SEED_EXPORT_PATH`."
+        "Reads `media_seed_export.json` and returns **routes** for the **latest crawl only** (keys listed under "
+        "`_meta.score_keys_this_run`). If that run found no scores, **routes** is empty even if older keys remain "
+        "in the file. Set `full=true` for the raw export under **export**. Override path with `MEDIA_SEED_EXPORT_PATH`."
     ),
     responses={
         404: {"description": "Export file does not exist"},
